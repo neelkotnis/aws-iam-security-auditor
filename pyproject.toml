@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "aws-iam-auditor"
+version = "0.1.0"
+description = "Detect common AWS IAM security misconfigurations"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+dependencies = [
+    "boto3>=1.34",
+    "rich>=13.0",
+]
+
+[project.scripts]
+iam-auditor = "iam_auditor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
