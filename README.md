@@ -63,20 +63,29 @@ PYTHONPATH=src python -m iam_auditor --profile my-profile
 **Terminal** — Rich-formatted table sorted by severity (CRITICAL first):
 
 ```
-╭─────────────────────────────────────────╮
-│         AWS IAM Security Audit          │
-│  Account:  123456789012                 │
-│  Run at:   2024-06-01T10:00:00Z         │
-│  Findings: 7 total                      │
-╰─────────────────────────────────────────╯
+┌─────────────────────────────────────────────┐
+|        AWS IAM Security Audit               |
+| Account:  123456789012                      |
+| Run at:   2024-06-01T10:00:00Z              |
+| Findings: 7 total                           |
+└─────────────────────────────────────────────┘
 
-╭──────────┬──────────┬──────────────────────────── ...
-│ Severity │ Check ID │ Check                       ...
-├──────────┼──────────┼──────────────────────────── ...
-│ ✖ CRIT.. │ IAM-002  │ Root Account MFA Disabled   ...
-│ ✖ CRIT.. │ IAM-004  │ AdministratorAccess Attach  ...
-│ ■ HIGH   │ IAM-001  │ IAM User Without MFA        ...
-...
+┌──────────────┬──────────┬─────────────────────────────────────┬─────────────────────────┐
+│ Severity     │ Check ID │ Check                               │ Resource                │
+├──────────────┼──────────┼─────────────────────────────────────┼─────────────────────────┤
+│ ✖ CRITICAL   │ IAM-002  │ Root Account MFA Disabled           │ arn:aws:iam::root       │
+│ ✖ CRITICAL   │ IAM-004  │ AdministratorAccess Attached        │ iam::user/admin         │
+│ ■ HIGH       │ IAM-001  │ IAM User Without MFA                │ arn:aws:iam::user/bob   │
+│ ■ HIGH       │ IAM-003  │ Wildcard Action in Policy           │ arn:aws:iam::policy/... │
+│ ■ HIGH       │ IAM-006  │ Access Key Rotation Overdue         │ arn:aws:iam::user/bob   │
+│ ▲ MEDIUM     │ IAM-005  │ Access Key Never Used               │ arn:aws:iam::user/svc1  │
+│ ▲ MEDIUM     │ IAM-005  │ Access Key Inactive                 │ arn:aws:iam::user/svc2  │
+└──────────────┴──────────┴─────────────────────────────────────┴─────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────┐
+│  Summary                                                     │
+│  ✖ CRITICAL: 2   ■ HIGH: 3   ▲ MEDIUM: 2   ● LOW: 0          │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 **JSON** — Written to `iam_audit_<account>_<timestamp>.json`:
@@ -95,15 +104,17 @@ PYTHONPATH=src python -m iam_auditor --profile my-profile
 
 ```
 src/
-  iam_auditor/
-    cli.py              # argparse entrypoint
-    engine.py           # ThreadPoolExecutor orchestrator
-    models.py           # Finding, AuditResult, Severity
-    checks/
-      mfa.py            # IAM-001, IAM-002
-      permissions.py    # IAM-003, IAM-004
-      access_keys.py    # IAM-005, IAM-006
-    reporters/
-      terminal.py       # Rich table output
-      json_reporter.py  # JSON file output
+└── iam_auditor/
+    ├── cli.py                 # argparse entrypoint
+    ├── engine.py              # ThreadPoolExecutor orchestrator
+    ├── models.py              # Finding, AuditResult, Severity
+    │
+    ├── checks/
+    │   ├── mfa.py             # IAM-001, IAM-002, IAM-007
+    │   ├── permissions.py     # IAM-003, IAM-004
+    │   └── access_keys.py     # IAM-005, IAM-006
+    │
+    └── reporters/
+        ├── terminal.py        # Rich table output
+        └── json_reporter.py   # JSON report output
 ```
