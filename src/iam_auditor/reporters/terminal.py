@@ -4,9 +4,10 @@ reporters/terminal.py
 Renders audit findings to the terminal using Rich.
 
 Output structure:
-  1. Header panel with account/timestamp
-  2. Findings table (sorted critical → low)
-  3. Summary counts panel
+  1. Header panel  — account, timestamp, authenticated identity
+  2. Findings table — sorted CRITICAL → LOW, includes CIS control column
+  3. Check timings  — per-check duration table
+  4. Summary panel  — severity counts + total scan duration
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from iam_auditor.models import AuditResult, Severity, SEVERITY_COLORS
 
 console = Console()
 
-# Severity → Rich style string (bold for visibility)
 _SEVERITY_STYLE: dict[Severity, str] = {
     Severity.LOW:      "bold green",
     Severity.MEDIUM:   "bold yellow",
@@ -29,7 +29,6 @@ _SEVERITY_STYLE: dict[Severity, str] = {
     Severity.CRITICAL: "bold red",
 }
 
-# Summary badge characters
 _SEVERITY_ICONS: dict[Severity, str] = {
     Severity.LOW:      "●",
     Severity.MEDIUM:   "▲",
@@ -45,10 +44,15 @@ def _severity_badge(severity: Severity) -> Text:
 
 
 def print_header(result: AuditResult) -> None:
+    total_ms = result.total_duration_ms()
+    duration_str = (
+        f"{total_ms / 1000:.1f}s" if total_ms >= 1000 else f"{total_ms:.0f}ms"
+    )
     content = (
-        f"[bold]Account:[/bold]  {result.account_id}\n"
-        f"[bold]Run at:[/bold]   {result.run_at}\n"
-        f"[bold]Findings:[/bold] {len(result.findings)} total"
+        f"[bold]Account:[/bold]   {result.account_id}\n"
+        f"[bold]Run at:[/bold]    {result.run_at}\n"
+        f"[bold]Findings:[/bold]  {len(result.findings)} total\n"
+        f"[bold]Duration:[/bold]  {duration_str}"
     )
     console.print(
         Panel(content, title="[bold cyan]AWS IAM Security Audit[/bold cyan]", expand=False),
@@ -70,8 +74,9 @@ def print_findings_table(result: AuditResult) -> None:
 
     table.add_column("Severity",    style="bold", width=10, no_wrap=True)
     table.add_column("Check ID",    style="dim",  width=10, no_wrap=True)
-    table.add_column("Check",                     width=28, no_wrap=False)
-    table.add_column("Resource",                  width=38, no_wrap=False, overflow="fold")
+    table.add_column("CIS",         style="dim",  width=9,  no_wrap=True)
+    table.add_column("Check",                     width=26, no_wrap=False)
+    table.add_column("Resource",                  width=36, no_wrap=False, overflow="fold")
     table.add_column("Detail",                    ratio=2,  no_wrap=False)
     table.add_column("Remediation",               ratio=3,  no_wrap=False)
 
@@ -79,6 +84,7 @@ def print_findings_table(result: AuditResult) -> None:
         table.add_row(
             _severity_badge(finding.severity),
             finding.check_id,
+            finding.cis_control or "—",
             finding.check_name,
             finding.resource,
             finding.detail,
@@ -88,8 +94,50 @@ def print_findings_table(result: AuditResult) -> None:
     console.print(table, "\n")
 
 
+def print_timings(result: AuditResult) -> None:
+    """Render a compact per-check timing table."""
+    if not result.check_timings:
+        return
+
+    table = Table(
+        box=box.SIMPLE,
+        header_style="bold dim",
+        show_edge=False,
+        padding=(0, 2),
+    )
+    table.add_column("Check",    style="dim")
+    table.add_column("Duration", style="dim", justify="right")
+    table.add_column("Findings", style="dim", justify="right")
+
+    # Build a quick lookup: label → finding count
+    counts: dict[str, int] = {}
+    for f in result.findings:
+        # Match by partial label — check names use title case
+        for label in result.check_timings:
+            if label not in counts:
+                counts[label] = 0
+
+    for f in result.findings:
+        for label in result.check_timings:
+            if any(word in label for word in f.check_name.split()):
+                counts[label] = counts.get(label, 0) + 1
+                break
+
+    for label, ms in sorted(result.check_timings.items()):
+        duration_str = f"{ms / 1000:.2f}s" if ms >= 1000 else f"{ms:.0f}ms"
+        count = counts.get(label, 0)
+        count_str = str(count) if count > 0 else "[dim]0[/dim]"
+        table.add_row(label, duration_str, count_str)
+
+    console.print(Panel(table, title="[bold]Check Timings[/bold]", expand=False))
+
+
 def print_summary(result: AuditResult) -> None:
     summary = result.summary()
+    total_ms = result.total_duration_ms()
+    duration_str = (
+        f"{total_ms / 1000:.1f}s" if total_ms >= 1000 else f"{total_ms:.0f}ms"
+    )
 
     parts = []
     for severity in [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW]:
@@ -98,7 +146,9 @@ def print_summary(result: AuditResult) -> None:
         style = _SEVERITY_STYLE[severity]
         parts.append(f"[{style}]{icon} {severity.value}: {count}[/{style}]")
 
-    content = "   ".join(parts)
+    severity_line = "   ".join(parts)
+    content = f"{severity_line}\n[dim]Total scan time: {duration_str}[/dim]"
+
     console.print(
         Panel(content, title="[bold]Summary[/bold]", expand=False),
     )
@@ -106,9 +156,10 @@ def print_summary(result: AuditResult) -> None:
 
 def render(result: AuditResult) -> None:
     """
-    Full terminal render: header → table → summary.
-    Call this as the single entry point from cli.py.
+    Full terminal render: header → findings table → timings → summary.
+    Single entry point called from cli.py.
     """
     print_header(result)
     print_findings_table(result)
+    print_timings(result)
     print_summary(result)

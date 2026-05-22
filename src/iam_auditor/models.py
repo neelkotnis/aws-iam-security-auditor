@@ -50,6 +50,7 @@ class Finding:
         detail:       What was found — specific, factual, no fluff.
         remediation:  Concise action the operator should take.
         region:       AWS region (default "global" for IAM).
+        cis_control:  CIS AWS Benchmark control reference, e.g. "CIS 1.5".
     """
     check_id: str
     check_name: str
@@ -58,6 +59,7 @@ class Finding:
     detail: str
     remediation: str
     region: str = "global"
+    cis_control: str = ""        # e.g. "CIS 1.5", empty if not mapped
 
     def to_dict(self) -> dict:
         """Return a JSON-serialisable dictionary."""
@@ -72,13 +74,15 @@ class AuditResult:
     Aggregated output of a full audit run.
 
     Attributes:
-        account_id:  AWS account ID audited.
-        run_at:      ISO-8601 timestamp of when the audit ran.
-        findings:    All findings collected across every check.
+        account_id:     AWS account ID audited.
+        run_at:         ISO-8601 timestamp of when the audit ran.
+        findings:       All findings collected across every check.
+        check_timings:  Per-check execution time in milliseconds.
     """
     account_id: str
     run_at: str = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
     findings: list[Finding] = field(default_factory=list)
+    check_timings: dict[str, float] = field(default_factory=dict)  # label → ms
 
     # ------------------------------------------------------------------
     # Convenience helpers
@@ -102,14 +106,41 @@ class AuditResult:
         order = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
         return sorted(self.findings, key=lambda f: order[f.severity])
 
+    def total_duration_ms(self) -> float:
+        """Sum of all check durations in milliseconds."""
+        return sum(self.check_timings.values())
+
     def to_dict(self) -> dict:
         return {
             "account_id": self.account_id,
             "run_at": self.run_at,
             "summary": self.summary(),
             "total_findings": len(self.findings),
+            "check_timings": self.check_timings,
+            "total_duration_ms": round(self.total_duration_ms(), 2),
             "findings": [f.to_dict() for f in self.sorted_findings()],
         }
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent)
+
+
+@dataclass
+class CheckResult:
+    """
+    Wraps the output of a single check with execution metadata.
+
+    Attributes:
+        label:        Human-readable check name, e.g. "MFA Checks".
+        findings:     All findings produced by this check.
+        duration_ms:  How long the check took in milliseconds.
+        error:        Set if the check failed with an unhandled exception.
+    """
+    label: str
+    findings: list[Finding] = field(default_factory=list)
+    duration_ms: float = 0.0
+    error: str | None = None
+
+    @property
+    def failed(self) -> bool:
+        return self.error is not None

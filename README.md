@@ -1,32 +1,97 @@
 # AWS IAM Security Auditor
 
-A lightweight, production-style CLI tool that audits AWS IAM configurations and surfaces common security misconfigurations.
+A production-grade CLI tool that audits AWS IAM configurations against the **CIS AWS Foundations Benchmark** and surfaces security misconfigurations with actionable remediation guidance.
+
+```
+┌─────────────────────────────────────────────┐
+│          AWS IAM Security Audit             │
+│  Account:   123456789012                    │
+│  Run at:    2024-06-01T10:00:00Z            │
+│  Findings:  9 total                         │
+│  Duration:  4.2s                            │
+└─────────────────────────────────────────────┘
+```
 
 ## Checks
 
-| ID       | Check                          | Severity |
-|----------|--------------------------------|----------|
-| IAM-001  | IAM user without MFA           | HIGH     |
-| IAM-002  | Root account MFA disabled      | CRITICAL |
-| IAM-003  | Wildcard action in policy      | HIGH     |
-| IAM-004  | AdministratorAccess attached   | CRITICAL |
-| IAM-005  | Access key inactive / unused   | MEDIUM   |
-| IAM-006  | Access key rotation overdue    | HIGH     |
+| ID      | Check                              | Severity | CIS Control |
+|---------|------------------------------------|----------|-------------|
+| IAM-001 | IAM user without MFA               | HIGH     | CIS 1.10    |
+| IAM-002 | Root account MFA disabled          | CRITICAL | CIS 1.5     |
+| IAM-003 | Wildcard action (`*`) in policy    | HIGH     | CIS 1.16    |
+| IAM-004 | AdministratorAccess attached       | CRITICAL | CIS 1.16    |
+| IAM-005 | Access key inactive / never used   | MEDIUM   | CIS 1.12    |
+| IAM-006 | Access key rotation overdue        | HIGH     | CIS 1.14    |
+| IAM-007 | Root account access keys present   | CRITICAL | CIS 1.4     |
+| IAM-008 | Weak or missing password policy    | MEDIUM   | CIS 1.8     |
+| IAM-009 | IAM user inactive >90 days         | MEDIUM   | CIS 1.12    |
+| IAM-010 | Overly permissive role trust policy| CRITICAL | —           |
+| IAM-011 | Inline policies detected           | LOW      | —           |
+
+## Architecture
+
+```
+CLI (argparse)
+    │
+    ▼
+Session Factory (boto3)
+    │
+    ▼
+Audit Engine ──── ThreadPoolExecutor (4 workers)
+    │                   │
+    │      ┌────────────┼────────────┬────────────┐
+    │      ▼            ▼            ▼            ▼
+    │  mfa.py    permissions.py  access_keys  unused_users
+    │      │            │            │            │
+    └──────┴────────────┴────────────┴────────────┘
+                        │
+                   CheckResult (findings + timing)
+                        │
+              ┌─────────┴─────────┐
+              ▼                   ▼
+       terminal.py          json_reporter.py
+```
 
 ## Requirements
 
 - Python 3.10+
 - AWS credentials configured (env vars, `~/.aws/credentials`, or IAM role)
-- Required IAM permissions: `iam:GenerateCredentialReport`, `iam:GetCredentialReport`, `iam:ListUsers`, `iam:ListAccessKeys`, `iam:GetAccessKeyLastUsed`, `iam:ListPolicies`, `iam:GetPolicyVersion`, `iam:ListEntitiesForPolicy`, `iam:GetAccountSummary`, `sts:GetCallerIdentity`
+
+**Required IAM permissions (read-only):**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "iam:GenerateCredentialReport",
+      "iam:GetCredentialReport",
+      "iam:GetAccountSummary",
+      "iam:GetAccountPasswordPolicy",
+      "iam:ListUsers",
+      "iam:ListRoles",
+      "iam:ListGroups",
+      "iam:ListAccessKeys",
+      "iam:GetAccessKeyLastUsed",
+      "iam:ListPolicies",
+      "iam:GetPolicyVersion",
+      "iam:ListEntitiesForPolicy",
+      "iam:ListUserPolicies",
+      "iam:ListRolePolicies",
+      "iam:ListGroupPolicies",
+      "sts:GetCallerIdentity"
+    ],
+    "Resource": "*"
+  }]
+}
+```
 
 ## Installation
 
 ```bash
-# From source
+git clone https://github.com/neelkotnis/aws-iam-security-auditor
+cd aws-iam-security-auditor
 pip install -e .
-
-# Or directly
-pip install -r requirements.txt
 ```
 
 ## Usage
@@ -35,86 +100,113 @@ pip install -r requirements.txt
 # Full audit, all severities
 iam-auditor
 
-# Use a named AWS profile
+# Named AWS profile
 iam-auditor --profile prod-readonly
 
-# Show only HIGH and CRITICAL
+# Only HIGH and CRITICAL findings
 iam-auditor --severity HIGH
+
+# Run specific checks only
+iam-auditor --checks mfa,permissions
 
 # Save JSON report to ./reports/
 iam-auditor --output-dir ./reports
 
-# Terminal output only (skip JSON)
+# CI/CD mode — suppress terminal output, print only JSON path
+iam-auditor --quiet
+
+# Terminal only, no JSON file
 iam-auditor --no-json
 
-# Enable verbose logging
+# Debug logging
 iam-auditor --verbose
 ```
 
-Or run as a module without installing:
-
+Or run without installing:
 ```bash
-cd aws-iam-auditor
 PYTHONPATH=src python -m iam_auditor --profile my-profile
 ```
 
 ## Output
 
-**Terminal** — Rich-formatted table sorted by severity (CRITICAL first):
+**Terminal** — color-coded findings table with CIS controls, per-check timings, and summary:
 
 ```
-┌─────────────────────────────────────────────┐
-|        AWS IAM Security Audit               |
-| Account:  123456789012                      |
-| Run at:   2024-06-01T10:00:00Z              |
-| Findings: 7 total                           |
-└─────────────────────────────────────────────┘
+╭──────────────┬──────────┬─────────┬──────────────────────────────┬─────────────────────╮
+│ Severity     │ Check ID │ CIS     │ Check                        │ Resource            │
+├──────────────┼──────────┼─────────┼──────────────────────────────┼─────────────────────┤
+│ ✖ CRITICAL   │ IAM-002  │ CIS 1.5 │ Root Account MFA Disabled    │ root-account        │
+│ ✖ CRITICAL   │ IAM-004  │ CIS 1.16│ AdministratorAccess Attached │ iam::user/admin     │
+│ ✖ CRITICAL   │ IAM-010  │ —       │ Overly Permissive Trust Policy│ arn:aws:iam::role/..│
+│ ■ HIGH       │ IAM-001  │ CIS 1.10│ IAM User Without MFA         │ arn:aws:iam::user/..│
+│ ■ HIGH       │ IAM-006  │ CIS 1.14│ Access Key Rotation Overdue  │ arn:aws:iam::user/..│
+│ ▲ MEDIUM     │ IAM-008  │ CIS 1.8 │ Weak IAM Password Policy     │ account-password-..  │
+│ ▲ MEDIUM     │ IAM-009  │ CIS 1.12│ IAM User Inactive            │ arn:aws:iam::user/..│
+╰──────────────┴──────────┴─────────┴──────────────────────────────┴─────────────────────╯
 
-┌──────────────┬──────────┬─────────────────────────────────────┬─────────────────────────┐
-│ Severity     │ Check ID │ Check                               │ Resource                │
-├──────────────┼──────────┼─────────────────────────────────────┼─────────────────────────┤
-│ ✖ CRITICAL   │ IAM-002  │ Root Account MFA Disabled           │ arn:aws:iam::root       │
-│ ✖ CRITICAL   │ IAM-004  │ AdministratorAccess Attached        │ iam::user/admin         │
-│ ■ HIGH       │ IAM-001  │ IAM User Without MFA                │ arn:aws:iam::user/bob   │
-│ ■ HIGH       │ IAM-003  │ Wildcard Action in Policy           │ arn:aws:iam::policy/... │
-│ ■ HIGH       │ IAM-006  │ Access Key Rotation Overdue         │ arn:aws:iam::user/bob   │
-│ ▲ MEDIUM     │ IAM-005  │ Access Key Never Used               │ arn:aws:iam::user/svc1  │
-│ ▲ MEDIUM     │ IAM-005  │ Access Key Inactive                 │ arn:aws:iam::user/svc2  │
-└──────────────┴──────────┴─────────────────────────────────────┴─────────────────────────┘
+╭─────────────────────────────╮
+│       Check Timings         │
+│  MFA Checks         1.2s    │
+│  Permission Checks  2.1s    │
+│  Access Key Checks  0.8s    │
+│  Unused User Checks 0.5s    │
+╰─────────────────────────────╯
 
-┌──────────────────────────────────────────────────────────────┐
-│  Summary                                                     │
-│  ✖ CRITICAL: 2   ■ HIGH: 3   ▲ MEDIUM: 2   ● LOW: 0          │
-└──────────────────────────────────────────────────────────────┘
+╭──────────────────────────────────────────────────────────╮
+│  Summary                                                 │
+│  ✖ CRITICAL: 3   ■ HIGH: 2   ▲ MEDIUM: 2   ● LOW: 1    │
+│  Total scan time: 4.2s                                   │
+╰──────────────────────────────────────────────────────────╯
 ```
 
-**JSON** — Written to `iam_audit_<account>_<timestamp>.json`:
+**JSON** — written to `iam_audit_<account>_<timestamp>.json`:
 
 ```json
 {
   "account_id": "123456789012",
   "run_at": "2024-06-01T10:00:00Z",
-  "summary": { "LOW": 0, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 2 },
-  "total_findings": 7,
-  "findings": [ { ... } ]
+  "summary": { "LOW": 1, "MEDIUM": 2, "HIGH": 2, "CRITICAL": 3 },
+  "total_findings": 9,
+  "check_timings": {
+    "MFA Checks": 1200.4,
+    "Permission Checks": 2100.1,
+    "Access Key Checks": 800.2,
+    "Unused User Checks": 500.8
+  },
+  "total_duration_ms": 4601.5,
+  "findings": [ { "check_id": "IAM-002", "cis_control": "CIS 1.5", ... } ]
 }
+```
+
+## Exit Codes
+
+| Code | Meaning                                  |
+|------|------------------------------------------|
+| `0`  | Audit completed, no findings             |
+| `1`  | Findings found, none CRITICAL            |
+| `2`  | One or more CRITICAL findings found      |
+
+Use in CI/CD:
+```bash
+iam-auditor --quiet --severity HIGH || notify-oncall.sh
 ```
 
 ## Project Structure
 
-```
+```text
 src/
 └── iam_auditor/
-    ├── cli.py                 # argparse entrypoint
-    ├── engine.py              # ThreadPoolExecutor orchestrator
-    ├── models.py              # Finding, AuditResult, Severity
+    ├── cli.py                 # CLI entrypoint, argparse, exit codes
+    ├── engine.py              # Check orchestration, threading, timings
+    ├── models.py              # Finding, Severity, AuditResult models
     │
     ├── checks/
-    │   ├── mfa.py             # IAM-001, IAM-002, IAM-007
-    │   ├── permissions.py     # IAM-003, IAM-004
-    │   └── access_keys.py     # IAM-005, IAM-006
+    │   ├── mfa.py             # MFA & root account security checks
+    │   ├── permissions.py     # IAM policy & privilege escalation checks
+    │   ├── access_keys.py     # Access key hygiene & rotation checks
+    │   └── unused_users.py    # Dormant / inactive IAM user detection
     │
     └── reporters/
-        ├── terminal.py        # Rich table output
-        └── json_reporter.py   # JSON report output
+        ├── terminal.py        # Rich terminal reporting & summaries
+        └── json_reporter.py   # Structured JSON report generation
 ```
