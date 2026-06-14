@@ -1,0 +1,2 @@
+[console_scripts]
+iam-auditor = iam_auditor.cli:main

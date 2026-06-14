@@ -14,7 +14,7 @@ from enum import Enum
 
 
 class Severity(str, Enum):
-    """Finding severity levels, ordered low → critical."""
+    """Finding severity levels, ordered low -> critical."""
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
@@ -47,10 +47,12 @@ class Finding:
         check_name:   Human-readable check name.
         severity:     One of LOW / MEDIUM / HIGH / CRITICAL.
         resource:     The AWS resource ARN or name this finding applies to.
-        detail:       What was found — specific, factual, no fluff.
+        detail:       What was found - specific, factual, no fluff.
         remediation:  Concise action the operator should take.
+        account_id:   AWS account ID where the finding was observed.
         region:       AWS region (default "global" for IAM).
         cis_control:  CIS AWS Benchmark control reference, e.g. "CIS 1.5".
+        compliance_controls: All framework controls mapped to this check.
     """
     check_id: str
     check_name: str
@@ -58,13 +60,15 @@ class Finding:
     resource: str
     detail: str
     remediation: str
+    account_id: str = "unknown"
     region: str = "global"
-    cis_control: str = ""        # e.g. "CIS 1.5", empty if not mapped
+    cis_control: str = ""
+    compliance_controls: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Return a JSON-serialisable dictionary."""
         d = asdict(self)
-        d["severity"] = self.severity.value  # enum → string
+        d["severity"] = self.severity.value  # enum -> string
         return d
 
 
@@ -82,11 +86,7 @@ class AuditResult:
     account_id: str
     run_at: str = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
     findings: list[Finding] = field(default_factory=list)
-    check_timings: dict[str, float] = field(default_factory=dict)  # label → ms
-
-    # ------------------------------------------------------------------
-    # Convenience helpers
-    # ------------------------------------------------------------------
+    check_timings: dict[str, float] = field(default_factory=dict)
 
     def add(self, finding: Finding) -> None:
         self.findings.append(finding)
@@ -98,16 +98,13 @@ class AuditResult:
         return [f for f in self.findings if f.severity == severity]
 
     def summary(self) -> dict[str, int]:
-        """Return a count per severity level."""
         return {s.value: len(self.by_severity(s)) for s in Severity}
 
     def sorted_findings(self) -> list[Finding]:
-        """Return findings sorted critical → low."""
         order = {Severity.CRITICAL: 0, Severity.HIGH: 1, Severity.MEDIUM: 2, Severity.LOW: 3}
         return sorted(self.findings, key=lambda f: order[f.severity])
 
     def total_duration_ms(self) -> float:
-        """Sum of all check durations in milliseconds."""
         return sum(self.check_timings.values())
 
     def to_dict(self) -> dict:
@@ -129,12 +126,6 @@ class AuditResult:
 class CheckResult:
     """
     Wraps the output of a single check with execution metadata.
-
-    Attributes:
-        label:        Human-readable check name, e.g. "MFA Checks".
-        findings:     All findings produced by this check.
-        duration_ms:  How long the check took in milliseconds.
-        error:        Set if the check failed with an unhandled exception.
     """
     label: str
     findings: list[Finding] = field(default_factory=list)
