@@ -19,15 +19,38 @@ logger = logging.getLogger(__name__)
 
 
 def run(session: boto3.Session) -> list[Finding]:
-    region = session.region_name or "us-east-1"
-    gd     = session.client("guardduty", region_name=region)
-    aid    = session.client("sts").get_caller_identity()["Account"]
+    region   = session.region_name or "us-east-1"
+    gd       = session.client("guardduty", region_name=region)
+    aid      = session.client("sts").get_caller_identity()["Account"]
     findings = []
 
     try:
         detectors = gd.list_detectors().get("DetectorIds", [])
     except Exception as e:
-        logger.error("GD: list_detectors failed [%s]: %s", region, e)
+        err = str(e)
+        # SubscriptionRequiredException means GuardDuty is not available
+        # on this account plan — surface it as a finding
+        if "SubscriptionRequiredException" in err or "AccessDeniedException" in err:
+            findings.append(Finding(
+                check_id="GD-001",
+                check_name="GuardDuty Not Available or Not Enabled",
+                severity=Severity.CRITICAL,
+                resource=f"arn:aws:guardduty:{region}:{aid}",
+                account_id=aid,
+                region=region,
+                detail=(
+                    f"GuardDuty is not enabled or not available in {region}. "
+                    "Threat detection (cryptomining, credential exfiltration, C2) is inactive."
+                ),
+                remediation=(
+                    f"Enable GuardDuty: aws guardduty create-detector --enable --region {region}. "
+                    "Ensure your AWS account plan supports GuardDuty."
+                ),
+                cis_control=get_cis("GD-001"),
+                compliance_controls=get_controls("GD-001"),
+            ))
+        else:
+            logger.error("GD: list_detectors failed [%s]: %s", region, e)
         return findings
 
     if not detectors:
@@ -63,7 +86,6 @@ def run(session: boto3.Session) -> list[Finding]:
                 ))
                 continue
 
-            # Check for unresolved HIGH/CRITICAL findings (severity >= 7)
             resp = gd.list_findings(
                 DetectorId=did,
                 FindingCriteria={
@@ -76,7 +98,9 @@ def run(session: boto3.Session) -> list[Finding]:
             )
             fids = resp.get("FindingIds", [])
             if fids:
-                details = gd.get_findings(DetectorId=did, FindingIds=fids[:10]).get("Findings", [])
+                details = gd.get_findings(
+                    DetectorId=did, FindingIds=fids[:10]
+                ).get("Findings", [])
                 for gdf in details:
                     sev_num = gdf.get("Severity", 0)
                     sev = Severity.CRITICAL if sev_num >= 9 else Severity.HIGH

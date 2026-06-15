@@ -2,6 +2,7 @@
 reporters/html_reporter.py
 --------------------------
 Writes a self-contained HTML audit report.
+Output path: <output_dir>/<account_id>/iam_audit_<timestamp>.html
 """
 
 from __future__ import annotations
@@ -82,11 +83,14 @@ def _findings_rows(result: AuditResult) -> str:
 
 
 def write(result: AuditResult, output_dir: str = ".") -> str:
-    os.makedirs(output_dir, exist_ok=True)
+    # Create account-specific subdirectory
+    account_dir = os.path.join(output_dir, result.account_id)
+    os.makedirs(account_dir, exist_ok=True)
+
     ts_label = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     ts_file  = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S")
-    filename = f"iam_audit_{result.account_id}_{ts_file}.html"
-    path     = os.path.join(output_dir, filename)
+    filename = f"iam_audit_{ts_file}.html"
+    path     = os.path.join(account_dir, filename)
     summary  = result.summary()
     total    = len(result.findings)
 

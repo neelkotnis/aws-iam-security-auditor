@@ -1,7 +1,8 @@
 """
 reporters/csv_reporter.py
 --------------------------
-Writes a flat CSV report — one row per finding.
+Writes a flat CSV report.
+Output path: <output_dir>/<account_id>/iam_audit_<timestamp>.csv
 """
 
 from __future__ import annotations
@@ -19,10 +20,13 @@ COLUMNS = [
 
 
 def write(result: AuditResult, output_dir: str = ".") -> str:
-    os.makedirs(output_dir, exist_ok=True)
+    # Create account-specific subdirectory
+    account_dir = os.path.join(output_dir, result.account_id)
+    os.makedirs(account_dir, exist_ok=True)
+
     ts       = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S")
-    filename = f"iam_audit_{result.account_id}_{ts}.csv"
-    path     = os.path.join(output_dir, filename)
+    filename = f"iam_audit_{ts}.csv"
+    path     = os.path.join(account_dir, filename)
 
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=COLUMNS)

@@ -1,17 +1,25 @@
-# Python cache
+# Python
 __pycache__/
-*.pyc
-
-# Virtual environments
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
 venv/
-.env/
+.venv/
+env/
 
-# AWS audit reports
+# Audit reports — don't commit scan results to git
 iam_audit_*.json
+iam_audit_*.html
+iam_audit_*.csv
 
-# VS Code
+# IDE
 .vscode/
+.idea/
+*.swp
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db

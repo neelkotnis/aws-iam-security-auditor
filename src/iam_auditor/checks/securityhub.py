@@ -18,15 +18,15 @@ logger = logging.getLogger(__name__)
 
 
 def run(session: boto3.Session) -> list[Finding]:
-    region = session.region_name or "us-east-1"
-    sh     = session.client("securityhub", region_name=region)
-    aid    = session.client("sts").get_caller_identity()["Account"]
+    region   = session.region_name or "us-east-1"
+    sh       = session.client("securityhub", region_name=region)
+    aid      = session.client("sts").get_caller_identity()["Account"]
     findings = []
 
     try:
-        hub = sh.describe_hub()
+        hub       = sh.describe_hub()
         standards = sh.get_enabled_standards().get("StandardsSubscriptions", [])
-        active = [s for s in standards if s.get("StandardsStatus") == "READY"]
+        active    = [s for s in standards if s.get("StandardsStatus") == "READY"]
         if not active:
             findings.append(Finding(
                 check_id="SH-001",
@@ -41,7 +41,9 @@ def run(session: boto3.Session) -> list[Finding]:
                 compliance_controls=get_controls("SH-001"),
             ))
     except Exception as e:
-        if "InvalidAccessException" in str(e) or "not subscribed" in str(e).lower():
+        err = str(e)
+        if "InvalidAccessException" in err or "not subscribed" in err.lower() \
+                or "SubscriptionRequiredException" in err:
             findings.append(Finding(
                 check_id="SH-001",
                 check_name="Security Hub Not Enabled",
@@ -49,8 +51,14 @@ def run(session: boto3.Session) -> list[Finding]:
                 resource=f"arn:aws:securityhub:{region}:{aid}:hub/default",
                 account_id=aid,
                 region=region,
-                detail=f"Security Hub is not enabled in {region}.",
-                remediation=f"aws securityhub enable-security-hub --region {region} --enable-default-standards",
+                detail=(
+                    f"Security Hub is not enabled in {region}. "
+                    "Centralised security findings aggregation is inactive."
+                ),
+                remediation=(
+                    f"aws securityhub enable-security-hub --region {region} "
+                    "--enable-default-standards"
+                ),
                 cis_control=get_cis("SH-001"),
                 compliance_controls=get_controls("SH-001"),
             ))
