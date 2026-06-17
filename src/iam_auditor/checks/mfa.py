@@ -2,20 +2,19 @@
 checks/mfa.py
 -------------
 Checks:
-  IAM-001  IAM users without MFA enabled          → HIGH     (CIS 1.10)
-  IAM-002  Root account MFA disabled               → CRITICAL (CIS 1.5)
-  IAM-007  Root account access keys present        → CRITICAL (CIS 1.4)
-  IAM-008  Account password policy too weak        → MEDIUM   (CIS 1.8)
+  IAM-001  IAM users without MFA enabled          -> HIGH     (CIS 1.10)
+  IAM-002  Root account MFA disabled               -> CRITICAL (CIS 1.5)
+  IAM-007  Root account access keys present        -> CRITICAL (CIS 1.4)
+  IAM-008  Account password policy too weak        -> MEDIUM   (CIS 1.8)
 """
 
 from __future__ import annotations
 
-import csv
 import logging
-from io import StringIO
 
 import boto3
 
+from iam_auditor.checks._credential_report import get_credential_report_rows
 from iam_auditor.models import Finding, Severity
 
 logger = logging.getLogger(__name__)
@@ -32,49 +31,38 @@ MAX_PASSWORD_AGE = 90
 def check_users_without_mfa(iam_client) -> list[Finding]:
     """
     Identify IAM users with console access enabled but no MFA configured.
-    Uses the IAM credential report for efficient bulk analysis.
+    Uses the shared credential report instead of fetching its own copy.
     """
     findings: list[Finding] = []
+    rows = get_credential_report_rows(iam_client)
 
-    try:
-        iam_client.generate_credential_report()
-        response = iam_client.get_credential_report()
-        report_csv = response["Content"].decode("utf-8")
-    except Exception as exc:
-        logger.error("Failed to retrieve credential report: %s", exc)
-        return findings
+    for row in rows:
+        username = row.get("user", "")
+        arn = row.get("arn", "")
+        mfa_active = row.get("mfa_active", "").strip().lower()
+        password_enabled = row.get("password_enabled", "").strip().lower()
 
-    try:
-        reader = csv.DictReader(StringIO(report_csv))
-        for row in reader:
-            username = row.get("user", "")
-            arn = row.get("arn", "")
-            mfa_active = row.get("mfa_active", "").strip().lower()
-            password_enabled = row.get("password_enabled", "").strip().lower()
+        if username == "<root_account>":
+            continue
+        if password_enabled != "true":
+            continue
 
-            if username == "<root_account>":
-                continue
-            if password_enabled != "true":
-                continue
-
-            if mfa_active != "true":
-                findings.append(Finding(
-                    check_id="IAM-001",
-                    check_name="IAM User Without MFA",
-                    severity=Severity.HIGH,
-                    resource=arn,
-                    detail=(
-                        f"User '{username}' has console access enabled "
-                        "but no MFA device configured."
-                    ),
-                    remediation=(
-                        "Enable MFA for this user and enforce MFA usage "
-                        "through IAM policy conditions where possible."
-                    ),
-                    cis_control="CIS 1.10",
-                ))
-    except Exception as exc:
-        logger.error("Failed parsing credential report: %s", exc)
+        if mfa_active != "true":
+            findings.append(Finding(
+                check_id="IAM-001",
+                check_name="IAM User Without MFA",
+                severity=Severity.HIGH,
+                resource=arn,
+                detail=(
+                    f"User '{username}' has console access enabled "
+                    "but no MFA device configured."
+                ),
+                remediation=(
+                    "Enable MFA for this user and enforce MFA usage "
+                    "through IAM policy conditions where possible."
+                ),
+                cis_control="CIS 1.10",
+            ))
 
     logger.info("MFA user check completed with %d finding(s)", len(findings))
     return findings
@@ -127,7 +115,7 @@ def check_root_security(iam_client) -> list[Finding]:
 def check_password_policy(iam_client) -> list[Finding]:
     """
     Verify the account password policy meets CIS AWS Foundations Benchmark
-    minimum requirements (CIS 1.8 — 1.11).
+    minimum requirements (CIS 1.8 - 1.11).
     """
     findings: list[Finding] = []
 
@@ -135,7 +123,6 @@ def check_password_policy(iam_client) -> list[Finding]:
         response = iam_client.get_account_password_policy()
         policy = response.get("PasswordPolicy", {})
     except iam_client.exceptions.NoSuchEntityException:
-        # No password policy set at all — this is the worst case
         findings.append(Finding(
             check_id="IAM-008",
             check_name="No IAM Password Policy",
@@ -176,7 +163,7 @@ def check_password_policy(iam_client) -> list[Finding]:
     if max_age is None or max_age > MAX_PASSWORD_AGE:
         age_str = str(max_age) if max_age else "not set"
         issues.append(
-            f"password expiry is {age_str} days (required: ≤{MAX_PASSWORD_AGE})"
+            f"password expiry is {age_str} days (required: <={MAX_PASSWORD_AGE})"
         )
 
     if issues:
@@ -191,7 +178,7 @@ def check_password_policy(iam_client) -> list[Finding]:
             ),
             remediation=(
                 "Update the IAM password policy to require at least 14 characters, "
-                "uppercase, lowercase, numbers, symbols, and ≤90 day rotation."
+                "uppercase, lowercase, numbers, symbols, and <=90 day rotation."
             ),
             cis_control="CIS 1.8",
         ))

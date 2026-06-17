@@ -4,10 +4,10 @@ reporters/terminal.py
 Renders audit findings to the terminal using Rich.
 
 Output structure:
-  1. Header panel  — account, timestamp, authenticated identity
-  2. Findings table — sorted CRITICAL → LOW, includes CIS control column
-  3. Check timings  — per-check duration table
-  4. Summary panel  — severity counts + total scan duration
+  1. Header panel — account, timestamp, authenticated identity
+  2. Findings table — sorted CRITICAL -> LOW, includes CIS control column
+  3. Check timings — per-check duration table, exact finding count per check
+  4. Summary panel — severity counts + total scan duration
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from rich import box
+from rich.markup import escape
 
 from iam_auditor.models import AuditResult, Severity, SEVERITY_COLORS
 
@@ -95,9 +96,22 @@ def print_findings_table(result: AuditResult) -> None:
 
 
 def print_timings(result: AuditResult) -> None:
-    """Render a compact per-check timing table."""
-    if not result.check_timings:
+    """
+    Render a compact per-check timing table using the exact finding count
+    recorded by the engine for each check execution.
+
+    IMPORTANT: check labels contain literal square brackets for region
+    suffixes, e.g. "EC2 / VPC Checks [us-east-1]". Rich's Table.add_row()
+    treats string cell content as markup by default, so "[us-east-1]" was
+    being silently parsed (and discarded) as an attempted, invalid style
+    tag rather than rendered as literal text. Escaping the label with
+    rich.markup.escape() (or passing a Text object) prevents this.
+    """
+    if not result.check_details:
         return
+
+    longest_label = max((len(d.label) for d in result.check_details), default=20)
+    check_col_width = max(28, min(longest_label + 2, 60))
 
     table = Table(
         box=box.SIMPLE,
@@ -105,29 +119,20 @@ def print_timings(result: AuditResult) -> None:
         show_edge=False,
         padding=(0, 2),
     )
-    table.add_column("Check",    style="dim")
-    table.add_column("Duration", style="dim", justify="right")
-    table.add_column("Findings", style="dim", justify="right")
+    table.add_column("Check",    style="dim", width=check_col_width, no_wrap=True, overflow="ellipsis")
+    table.add_column("Duration", style="dim", justify="right", width=10, no_wrap=True)
+    table.add_column("Findings", style="dim", justify="right", width=10, no_wrap=True)
 
-    # Build a quick lookup: label → finding count
-    counts: dict[str, int] = {}
-    for f in result.findings:
-        # Match by partial label — check names use title case
-        for label in result.check_timings:
-            if label not in counts:
-                counts[label] = 0
-
-    for f in result.findings:
-        for label in result.check_timings:
-            if any(word in label for word in f.check_name.split()):
-                counts[label] = counts.get(label, 0) + 1
-                break
-
-    for label, ms in sorted(result.check_timings.items()):
-        duration_str = f"{ms / 1000:.2f}s" if ms >= 1000 else f"{ms:.0f}ms"
-        count = counts.get(label, 0)
-        count_str = str(count) if count > 0 else "[dim]0[/dim]"
-        table.add_row(label, duration_str, count_str)
+    for detail in sorted(result.check_details, key=lambda d: d.label):
+        duration_str = f"{detail.duration_ms / 1000:.2f}s" if detail.duration_ms >= 1000 else f"{detail.duration_ms:.0f}ms"
+        if detail.error:
+            count_str = "[red]ERROR[/red]"
+        elif detail.finding_count > 0:
+            count_str = str(detail.finding_count)
+        else:
+            count_str = "[dim]0[/dim]"
+        # escape() prevents Rich from interpreting [region] as markup
+        table.add_row(escape(detail.label), duration_str, count_str)
 
     console.print(Panel(table, title="[bold]Check Timings[/bold]", expand=False))
 
@@ -156,7 +161,7 @@ def print_summary(result: AuditResult) -> None:
 
 def render(result: AuditResult) -> None:
     """
-    Full terminal render: header → findings table → timings → summary.
+    Full terminal render: header -> findings table -> timings -> summary.
     Single entry point called from cli.py.
     """
     print_header(result)

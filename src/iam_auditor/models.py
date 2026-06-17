@@ -28,7 +28,6 @@ class Severity(str, Enum):
         return self == other or self < other
 
 
-# Maps each severity to a Rich markup color tag
 SEVERITY_COLORS: dict[Severity, str] = {
     Severity.LOW: "green",
     Severity.MEDIUM: "yellow",
@@ -41,18 +40,6 @@ SEVERITY_COLORS: dict[Severity, str] = {
 class Finding:
     """
     A single security finding produced by a check.
-
-    Attributes:
-        check_id:     Short machine-readable identifier, e.g. "IAM-001".
-        check_name:   Human-readable check name.
-        severity:     One of LOW / MEDIUM / HIGH / CRITICAL.
-        resource:     The AWS resource ARN or name this finding applies to.
-        detail:       What was found - specific, factual, no fluff.
-        remediation:  Concise action the operator should take.
-        account_id:   AWS account ID where the finding was observed.
-        region:       AWS region (default "global" for IAM).
-        cis_control:  CIS AWS Benchmark control reference, e.g. "CIS 1.5".
-        compliance_controls: All framework controls mapped to this check.
     """
     check_id: str
     check_name: str
@@ -66,27 +53,34 @@ class Finding:
     compliance_controls: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        """Return a JSON-serialisable dictionary."""
         d = asdict(self)
-        d["severity"] = self.severity.value  # enum -> string
+        d["severity"] = self.severity.value
         return d
+
+
+@dataclass
+class CheckTiming:
+    """
+    Timing and finding-count metadata for a single check execution.
+    Replaces the old approach of guessing finding counts from labels
+    after the fact - the engine now records the exact count directly.
+    """
+    label: str
+    duration_ms: float
+    finding_count: int
+    error: str | None = None
 
 
 @dataclass
 class AuditResult:
     """
     Aggregated output of a full audit run.
-
-    Attributes:
-        account_id:     AWS account ID audited.
-        run_at:         ISO-8601 timestamp of when the audit ran.
-        findings:       All findings collected across every check.
-        check_timings:  Per-check execution time in milliseconds.
     """
     account_id: str
     run_at: str = field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
     findings: list[Finding] = field(default_factory=list)
     check_timings: dict[str, float] = field(default_factory=dict)
+    check_details: list[CheckTiming] = field(default_factory=list)
 
     def add(self, finding: Finding) -> None:
         self.findings.append(finding)

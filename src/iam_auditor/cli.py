@@ -101,8 +101,8 @@ Examples:
         help="Skip writing the CSV report",
     )
     parser.add_argument(
-        "--workers", type=int, default=8,
-        help="Thread pool size for concurrent scanning (default: 8)",
+        "--workers", type=int, default=4,
+        help="Thread pool size for concurrent scanning (default: 4)",
     )
     parser.add_argument(
         "--quiet", "-q", action="store_true",

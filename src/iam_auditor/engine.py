@@ -22,13 +22,10 @@ from iam_auditor.checks import (
     guardduty, iam_advanced, kms, mfa, permissions,
     rds, s3, secrets_manager, securityhub, unused_users,
 )
-from iam_auditor.models import AuditResult, CheckResult, Finding, Severity
+from iam_auditor.models import AuditResult, CheckResult, CheckTiming, Finding, Severity
 
 logger = logging.getLogger(__name__)
 
-# Registry: (label, check_key, is_global, callable)
-# is_global=True  -> runs once, regardless of --regions (IAM, CloudTrail, S3)
-# is_global=False -> runs once PER region in scope (EC2, KMS, GuardDuty, etc)
 CHECKS: list[tuple[str, str, bool, Callable]] = [
     ("MFA Checks",              "mfa",                True,  mfa.run),
     ("Permission Checks",       "permissions",        True,  permissions.run),
@@ -62,8 +59,8 @@ def _resolve_account_id(session: boto3.Session) -> str:
 
 def get_enabled_regions(session: boto3.Session) -> list[str]:
     """
-    Discover all AWS regions enabled for this account.
-    Used by --all-regions. Falls back to [DEFAULT_REGION] on failure.
+    Discover all AWS regions enabled for this account. Used by --all-regions.
+    Falls back to [DEFAULT_REGION] on failure.
     """
     try:
         ec2_client = session.client("ec2", region_name=DEFAULT_REGION)
@@ -87,7 +84,6 @@ def _run_check(label: str, check_fn: Callable, session: boto3.Session, region: s
     start = time.perf_counter()
     try:
         if region:
-            # Create a region-bound session by cloning credentials with new region
             regional_session = boto3.Session(
                 aws_access_key_id=session.get_credentials().access_key,
                 aws_secret_access_key=session.get_credentials().secret_key,
@@ -115,30 +111,17 @@ def _filter_checks(selected_keys: list[str] | None) -> list[tuple[str, str, bool
 def run_audit(
     session: boto3.Session,
     min_severity: Severity = Severity.LOW,
-    max_workers: int = 8,
+    max_workers: int = 4,
     selected_checks: list[str] | None = None,
     regions: list[str] | None = None,
     all_regions: bool = False,
 ) -> tuple[AuditResult, int]:
     """
     Run all registered checks concurrently and return an AuditResult.
-
-    Args:
-        session:          An authenticated boto3.Session.
-        min_severity:     Filter out findings below this level.
-        max_workers:      Thread pool size.
-        selected_checks:  List of check keys to run. None = run all.
-        regions:          Explicit list of regions for regional checks.
-                           Ignored if all_regions=True.
-        all_regions:      If True, auto-discover and scan every enabled region.
-
-    Returns:
-        Tuple of (AuditResult, exit_code).
     """
     account_id    = _resolve_account_id(session)
     checks_to_run = _filter_checks(selected_checks)
 
-    # Resolve which regions regional checks will run against
     if all_regions:
         target_regions = get_enabled_regions(session)
     elif regions:
@@ -149,14 +132,13 @@ def run_audit(
     result = AuditResult(account_id=account_id)
 
     logger.info(
-        "Starting audit — account: %s, checks: %d, regions: %s",
+        "Starting audit - account: %s, checks: %d, regions: %s",
         account_id, len(checks_to_run), target_regions,
     )
 
     severity_order = [Severity.LOW, Severity.MEDIUM, Severity.HIGH, Severity.CRITICAL]
     min_index      = severity_order.index(min_severity)
 
-    # Build the full work list: global checks run once, regional checks run per-region
     work_items: list[tuple[str, Callable, str | None]] = []
     for label, _, is_global, fn in checks_to_run:
         if is_global:
@@ -176,7 +158,13 @@ def run_audit(
             result.check_timings[check_result.label] = round(check_result.duration_ms, 2)
 
             if check_result.failed:
-                logger.error("%-40s FAILED %.0fms — %s",
+                result.check_details.append(CheckTiming(
+                    label=check_result.label,
+                    duration_ms=round(check_result.duration_ms, 2),
+                    finding_count=0,
+                    error=check_result.error,
+                ))
+                logger.error("%-40s FAILED %.0fms - %s",
                              check_result.label, check_result.duration_ms, check_result.error)
                 continue
 
@@ -187,6 +175,14 @@ def run_audit(
             filtered = [f for f in check_result.findings
                         if severity_order.index(f.severity) >= min_index]
             result.extend(filtered)
+
+            # Record the exact finding count for this specific check execution -
+            # no guessing required downstream by the terminal reporter.
+            result.check_details.append(CheckTiming(
+                label=check_result.label,
+                duration_ms=round(check_result.duration_ms, 2),
+                finding_count=len(filtered),
+            ))
 
             logger.info("%-40s total=%-3d kept=%-3d %.0fms",
                         check_result.label, len(check_result.findings),
