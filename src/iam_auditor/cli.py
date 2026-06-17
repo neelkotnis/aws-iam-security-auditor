@@ -24,7 +24,7 @@ console = Console()
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="iam-auditor",
-        description="AWS Security Auditor — multi-service misconfiguration scanner.",
+        description="AWS Security Auditor — multi-service, multi-region misconfiguration scanner.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exit codes:
@@ -36,7 +36,8 @@ Examples:
   iam-auditor
   iam-auditor --profile prod --severity HIGH
   iam-auditor --checks mfa,s3,cloudtrail
-  iam-auditor --html --csv --output-dir ./reports
+  iam-auditor --regions us-east-1,eu-west-1,ap-south-1
+  iam-auditor --all-regions --html --csv
   iam-auditor --list-checks
         """,
     )
@@ -44,6 +45,18 @@ Examples:
     parser.add_argument(
         "--profile", metavar="NAME", default=None,
         help="AWS named profile (default: env / instance role)",
+    )
+    parser.add_argument(
+        "--region", metavar="REGION", default=None,
+        help="Default session region (also used for global checks)",
+    )
+    parser.add_argument(
+        "--regions", metavar="LIST", default=None,
+        help="Comma-separated regions for regional checks, e.g. us-east-1,eu-west-1",
+    )
+    parser.add_argument(
+        "--all-regions", action="store_true",
+        help="Auto-discover and scan all enabled AWS regions (overrides --regions)",
     )
     parser.add_argument(
         "--severity",
@@ -65,7 +78,7 @@ Examples:
     )
     parser.add_argument(
         "--output-dir", metavar="DIR", default="reports",
-        help="Directory for report files (default: current directory)",
+        help="Directory for report files (default: ./reports)",
     )
     parser.add_argument(
         "--no-json", action="store_true",
@@ -86,6 +99,10 @@ Examples:
     parser.add_argument(
         "--no-csv", action="store_true",
         help="Skip writing the CSV report",
+    )
+    parser.add_argument(
+        "--workers", type=int, default=8,
+        help="Thread pool size for concurrent scanning (default: 8)",
     )
     parser.add_argument(
         "--quiet", "-q", action="store_true",
@@ -130,6 +147,8 @@ def main() -> int:
         kwargs = {}
         if args.profile:
             kwargs["profile_name"] = args.profile
+        if args.region:
+            kwargs["region_name"] = args.region
         session  = boto3.Session(**kwargs)
         identity = session.client("sts").get_caller_identity()
         if not args.quiet:
@@ -157,12 +176,27 @@ def main() -> int:
         if args.checks else None
     )
 
+    # Parse regions
+    explicit_regions = (
+        [r.strip() for r in args.regions.split(",")]
+        if args.regions else None
+    )
+
+    if not args.quiet:
+        if args.all_regions:
+            console.print("Scanning: [bold]all enabled regions[/bold] (this may take a while)")
+        elif explicit_regions:
+            console.print(f"Scanning regions: [bold]{', '.join(explicit_regions)}[/bold]")
+
     # Run audit
     try:
         result, exit_code = run_audit(
             session=session,
             min_severity=Severity(args.severity),
+            max_workers=args.workers,
             selected_checks=selected_checks,
+            regions=explicit_regions,
+            all_regions=args.all_regions,
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Audit interrupted.[/yellow]")
@@ -187,7 +221,7 @@ def main() -> int:
             console.print(f"[yellow]Warning:[/yellow] Could not write JSON report: {exc}")
 
     # HTML report
-    if args.html and not getattr(args, "no_html", False):
+    if args.html and not args.no_html:
         try:
             from iam_auditor.reporters import html_reporter
             path = html_reporter.write(result, output_dir=args.output_dir)
@@ -197,7 +231,7 @@ def main() -> int:
             console.print(f"[yellow]Warning:[/yellow] Could not write HTML report: {exc}")
 
     # CSV report
-    if args.csv and not getattr(args, "no_csv", False):
+    if args.csv and not args.no_csv:
         try:
             from iam_auditor.reporters import csv_reporter
             path = csv_reporter.write(result, output_dir=args.output_dir)
